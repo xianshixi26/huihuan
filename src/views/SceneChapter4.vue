@@ -5,8 +5,9 @@
       class="viewport"
       :class="currentMap"
       @mousedown="handleMapClick"
-      :style="{ backgroundImage: `url(${bgImage})` }"
     >
+      <img class="bg-img" :src="bgImage" alt="scene" />
+      <div class="vignette"></div>
       <div class="map-layer">
         <div
           v-for="obj in visibleTargets"
@@ -36,11 +37,14 @@
         <div class="stats">
           <div>🧠 最终理智：{{ playerStore.reason }}</div>
           <div>👁️ 最终执念：{{ playerStore.obsession }}</div>
+          <div>🔗 完成推理链：{{ playerStore.completedDeductions.length }}</div>
+          <div>📦 收集线索：{{ playerStore.bag.filter(i => i.type === 'clue').length }}</div>
         </div>
         <button class="game-btn" @click="executeEnding">执行宿命判定</button>
       </div>
     </div>
 
+    <div v-if="activeDialog" class="dialog-overlay"></div>
     <DialogBox
       v-if="activeDialog"
       :speaker="activeDialog.speaker"
@@ -69,6 +73,7 @@ const hoverTip = ref("");
 const showEnding = ref(false);
 const activeDialog = ref(null);
 const bgImage = ref("");
+const bgImages = { gate: '/images/学校门口.png', void: '/images/旋涡.png' }
 
 const targets = ref([
   // ========== 学校正大门 (gate) ==========
@@ -131,6 +136,7 @@ const visibleTargets = computed(() => {
 });
 
 const generateBackground = (mapType) => {
+  if (bgImages[mapType]) { bgImage.value = bgImages[mapType]; return }
   const canvas = document.createElement("canvas");
   drawPixelBackground(canvas, mapType);
   bgImage.value = canvas.toDataURL();
@@ -144,6 +150,7 @@ onMounted(() => {
 });
 
 const handleMapClick = (e) => {
+  if (activeDialog.value) return
   const rect = e.currentTarget.getBoundingClientRect();
   playerPos.value = {
     x: e.clientX - rect.left,
@@ -153,6 +160,7 @@ const handleMapClick = (e) => {
 };
 
 const interact = (target, event) => {
+  if (activeDialog.value) return
   playerPos.value = { x: target.x, y: target.y + 20 };
   hoverTip.value = target.name;
 
@@ -198,18 +206,37 @@ const onDialogOption = (opt) => {
 };
 
 const executeEnding = () => {
-  let endingMsg = "";
-  if (playerStore.reason >= 60 && playerStore.obsession < 30) {
-    endingMsg = "🎉 TRUE ENDING：破晓重圆\n你打破了第444次循环，推开了真实世界的校门。";
-  } else if (playerStore.obsession >= 50) {
-    endingMsg = "💀 BAD ENDING：常暗死劫\n你的执念化为心魔，永远沉沦。";
+  let endingTitle = ""
+  let endingMsg = ""
+  const dc = playerStore.completedDeductions.length
+  const ratio = playerStore.reason > 0 ? playerStore.obsession / playerStore.reason : 999
+
+  if (playerStore.reason >= 70 && playerStore.obsession < 25 && dc >= 2) {
+    endingTitle = "🎉 真结局A — 告别执念"
+    endingMsg = "你串联了所有关键线索，理智战胜了执念。第445次循环——你终于推开了真实的校门。门外是黎明的第一缕光。\n\n「循环已经结束，林迟。你可以离开了。」"
+  } else if (playerStore.reason >= 50 && dc >= 1 && ratio < 1.5) {
+    endingTitle = "🌅 真结局B — 接受自我"
+    endingMsg = "你承认执念也是自己的一部分——不逃避，不否定。循环没有消失，但你学会了与它共存。\n\n「欢迎回来，林迟。无论多少次，我都会在这里等你。」——沈知夏"
+  } else if (playerStore.obsession >= 70) {
+    endingTitle = "💀 假结局 — 执念吞噬"
+    endingMsg = "你的执念压倒了理智。镜中的自己变成了那个黑化的身影——你成为了第445个被困在循环中的执念碎片。\n\n「我就是你——现在，你也是我了。」"
+  } else if (playerStore.reason <= 15) {
+    endingTitle = "🌀 假结局 — 精神崩溃"
+    endingMsg = "理智所剩无几，现实与幻觉已经无法分辨。你在循环中迷失了方向，最终倒在了无尽重复的走廊中。\n\n「下一个循环见，林迟。」"
   } else {
-    endingMsg = "🌀 NORMAL ENDING：庄周梦蝶\n你醒来时，已分不清现实与循环。";
+    endingTitle = "🔄 普通结局 — 循环继续"
+    endingMsg = "你没有找到完整的真相——但这一次，你比之前更接近了。循环仍在继续，但第446次...你会做得更好。\n\n「有些谜题需要时间。我会等你的。」"
   }
-  msgStore.show(endingMsg, 5000);
-  setTimeout(() => {
-    window.location.reload();
-  }, 5000);
+
+  const fullMsg = `${endingTitle}\n\n${endingMsg}\n\n🧠 最终理智：${playerStore.reason} | 👁️ 最终执念：${playerStore.obsession} | 🔗 完成推理链：${dc}`
+
+  if (playerStore.obsession >= 70 || playerStore.reason <= 15) {
+    msgStore.show(fullMsg, 6000)
+    setTimeout(() => { window.location.reload() }, 7000)
+  } else {
+    msgStore.show(fullMsg, 8000)
+    setTimeout(() => { window.location.reload() }, 9000)
+  }
 };
 </script>
 
@@ -228,12 +255,14 @@ const executeEnding = () => {
   transform: translateX(-50%);
   overflow: hidden;
   border-radius: 16px;
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.6);
+  box-shadow: 0 0 40px rgba(0,0,0,0.6), inset 0 0 80px rgba(0,0,0,0.25);
+  border: 1px solid rgba(255,255,255,0.06);
   cursor: default;
-  background-size: cover;
-  background-position: center;
-  background-repeat: no-repeat;
+  animation: viewport-in 0.6s ease;
 }
+.bg-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; z-index: 0; }
+@keyframes viewport-in { from { opacity: 0; filter: blur(8px); } to { opacity: 1; filter: blur(0); } }
+.vignette { position: absolute; inset: 0; z-index: 4; pointer-events: none; box-shadow: inset 0 0 120px rgba(0,0,0,0.55), inset 0 0 40px rgba(0,0,0,0.35); }
 .map-layer {
   width: 100%;
   height: 100%;
@@ -317,4 +346,5 @@ const executeEnding = () => {
   display: flex;
   justify-content: space-around;
 }
+.dialog-overlay { position: absolute; inset: 0; z-index: 15; background: rgba(0,0,0,0.2); pointer-events: all; }
 </style>

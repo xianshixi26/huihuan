@@ -5,6 +5,9 @@
       <p class="game-subtitle">MUTED RECURSION • 校园悬疑剧情解谜</p >
     </div>
 
+    <!-- 记忆碎片轮播 -->
+    <GlitchCarousel :slides="memorySlides" :interval="4000" />
+
     <div v-if="!showCharacterSelect" class="menu-buttons">
       <button class="game-btn" @click="showCharacterSelect = true">进入潜意识</button>
       <button class="game-btn" @click="openModal('settings')">环境配置</button>
@@ -74,12 +77,32 @@
 import { ref, reactive } from 'vue'
 import { useRouter } from 'vue-router'
 import { usePlayerStore } from '../store/player'
+import GlitchCarousel from '../components/GlitchCarousel.vue'
 
 const router = useRouter()
 const playerStore = usePlayerStore()
 
 const showCharacterSelect = ref(false)
 const activeModal = ref(null)
+
+// 记忆碎片轮播数据（图片放 /public/images/carousel/ 下面）
+const memorySlides = [
+  {
+    image: '/images/轮播图一.png',
+    subtitle: '这里我好像来过…但又什么都想不起来',
+    ambient: 'MEMORY FRAGMENT · 01',
+  },
+  {
+    image: '/images/轮播图二.png',
+    subtitle: '走廊尽头有人在叫我，但我一回头就消失了',
+    ambient: 'MEMORY FRAGMENT · 02',
+  },
+  {
+    image: '/images/轮播图三.png',
+    subtitle: '那扇门后面是什么？我不敢打开',
+    ambient: 'MEMORY FRAGMENT · 03',
+  },
+]
 
 const settings = reactive({ textSpeed: 30, volume: 75 })
 const openModal = (type) => activeModal.value = type
@@ -92,14 +115,20 @@ const selectRole = (type) => {
 
 <style scoped>
 .home-container {
-  width: 100vw; height: 100vh; background: radial-gradient(circle at center, #140505 0%, #020202 100%);
+  width: 100vw; height: 100vh;
+  background: url('/images/背景图.png') center/cover no-repeat;
   display: flex; flex-direction: column; justify-content: center; align-items: center; position: relative;
 }
-.title-section { text-align: center; margin-bottom: 50px; }
+.home-container::before {
+  content: ''; position: absolute; inset: 0;
+  background: radial-gradient(circle at center, rgba(20,5,5,0.4) 0%, rgba(2,2,2,0.65) 100%);
+  z-index: 0; pointer-events: none;
+}
+.title-section { text-align: center; margin-bottom: 24px; position: relative; z-index: 1; }
 .game-title { font-size: 56px; margin: 0; letter-spacing: 16px; font-weight: 900; }
 .game-subtitle { color: #555; font-size: 13px; letter-spacing: 5px; margin-top: 15px; }
-.menu-buttons { display: flex; flex-direction: column; gap: 18px; width: 200px; }
-.character-select-section { text-align: center; animation: fadeIn 0.4s ease; }
+.menu-buttons { display: flex; flex-direction: column; gap: 18px; width: 200px; margin-top: 30px; position: relative; z-index: 1; }
+.character-select-section { text-align: center; animation: fadeIn 0.4s ease; position: relative; z-index: 1; }
 .select-title { color: #888; font-size: 14px; margin-bottom: 35px; letter-spacing: 3px; font-weight: normal; }
 .card-wrapper { display: flex; gap: 25px; margin-bottom: 40px; }
 .char-card {

@@ -1,15 +1,28 @@
 <!-- src/components/StatusPanel.vue -->
 <template>
   <div class="status-hud">
+    <!-- 头像按钮 -->
+    <div class="avatar-btn" @click="playerStore.toggleProfile()">
+      <div class="avatar-icon" :class="avatarClass">👤</div>
+    </div>
+
     <div class="stat-card">
       <div class="stat-header">🧠 理智</div>
       <div class="bar"><div class="fill reason" :style="{ width: playerStore.reason + '%' }"></div></div>
-      <div class="stat-value" :class="{ low: playerStore.reason <= 20 }">{{ playerStore.reason }}/100</div>
+      <div class="stat-value" :class="{ low: playerStore.reason <= 20 }">
+        {{ playerStore.reason }}/100
+        <span v-if="playerStore.sanityTier === 'high'" class="tier-badge high-tier">敏锐</span>
+        <span v-else-if="playerStore.sanityTier === 'mid'" class="tier-badge mid-tier">正常</span>
+        <span v-else class="tier-badge low-tier">恍惚</span>
+      </div>
     </div>
     <div class="stat-card">
       <div class="stat-header">👁️ 执念</div>
       <div class="bar"><div class="fill obsession" :style="{ width: playerStore.obsession + '%' }"></div></div>
-      <div class="stat-value" :class="{ high: playerStore.obsession >= 40 }">{{ playerStore.obsession }}/100</div>
+      <div class="stat-value" :class="{ high: playerStore.obsession >= 60 }">
+        {{ playerStore.obsession }}/100
+        <span v-if="playerStore.obsession >= 60" class="tier-badge danger-tier">危险</span>
+      </div>
       <div class="action-group">
         <button class="hud-btn" @click="openExchange">🔮 记忆交换</button>
         <button class="hud-btn" @click="toggleBag">🎒 背包 ({{ totalCount }})</button>
@@ -32,6 +45,7 @@
             </div>
             <div class="item-action">
               <button v-if="item.type === 'medicine'" class="use" @click="useItem(item.id)">使用</button>
+              <button v-if="item.type === 'clue'" class="use clue-use" @click="useClue(item)">使用</button>
             </div>
           </div>
           <div v-if="!filtered.length" class="empty">空空如也</div>
@@ -54,12 +68,13 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, inject } from 'vue'
 import { usePlayerStore } from '../store/player'
 import { useSystemMessage } from '../store/systemMessage'
 
 const playerStore = usePlayerStore()
 const msgStore = useSystemMessage()
+const openBrainstorm = inject('openBrainstorm', null)
 const showBag = ref(false)
 const showExchange = ref(false)
 const exchangeMsg = ref('')
@@ -96,8 +111,19 @@ const filtered = computed(() => {
   return playerStore.bag.filter(i => i.type === currentTab.value)
 })
 
+const avatarClass = computed(() => {
+  const t = playerStore.sanityTier
+  if (t === 'high') return 'avatar-high'
+  if (t === 'mid') return 'avatar-mid'
+  return 'avatar-low'
+})
+
 const getIcon = (type) => type === 'medicine' ? '💊' : '📜'
 const useItem = (id) => playerStore.useMedicineItem(id)
+const useClue = (item) => {
+  showBag.value = false
+  if (openBrainstorm) openBrainstorm(item.id)
+}
 
 const toggleBag = () => {
   showBag.value = !showBag.value
@@ -140,8 +166,24 @@ const handleExchange = () => {
   z-index: 100;
   display: flex;
   gap: 16px;
+  align-items: flex-start;
   font-family: 'Courier New', 'Inter', monospace;
 }
+.avatar-btn {
+  width: 44px; height: 44px;
+  border-radius: 50%;
+  background: rgba(16,16,18,0.85);
+  border: 2px solid #3a3d44;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+  transition: all 0.2s;
+}
+.avatar-btn:hover { border-color: #8a7550; box-shadow: 0 0 12px rgba(138,117,80,0.25); }
+.avatar-icon { font-size: 22px; }
+.avatar-high { filter: drop-shadow(0 0 4px #5a8a6a); }
+.avatar-mid  { filter: drop-shadow(0 0 4px #8a7550); }
+.avatar-low  { filter: drop-shadow(0 0 4px #8b1a1a); }
 .stat-card {
   background: rgba(16, 16, 18, 0.85);
   backdrop-filter: blur(8px);
@@ -178,7 +220,18 @@ const handleExchange = () => {
   font-weight: 500;
 }
 .low { color: #ff8888; }
-.high { color: #ffaa66; }
+.high { color: #ff6666; }
+.tier-badge {
+  font-size: 9px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  margin-left: 4px;
+  font-weight: 400;
+}
+.high-tier { background: #1a3a1a; color: #88cc88; }
+.mid-tier { background: #2a2a1a; color: #ccaa88; }
+.low-tier { background: #3a1a1a; color: #ff8888; }
+.danger-tier { background: #3a0a0a; color: #ff4444; }
 .action-group {
   display: flex;
   gap: 12px;
@@ -265,6 +318,8 @@ const handleExchange = () => {
 .desc { font-size: 12px; color: #aaa; margin-top: 4px; }
 .count { color: #c0a080; margin-left: 6px; }
 .use { background: #2a4a2a; border: none; border-radius: 20px; padding: 4px 12px; color: white; cursor: pointer; }
+.clue-use { background: #4a2a1a; border: 1px solid #8b4a1a; }
+.clue-use:hover { background: #6a3a2a; }
 .empty { text-align: center; padding: 40px; color: #666; }
 .exchange-panel {
   width: 420px;

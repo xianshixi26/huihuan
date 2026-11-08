@@ -1,396 +1,261 @@
 <template>
   <div class="scene">
     <StatusPanel />
-    <div
-      class="viewport"
-      :class="currentMap"
-      @mousedown="handleMapClick"
-      :style="{ backgroundImage: `url(${bgImage})` }"
-    >
+    <div class="viewport" :class="currentMap" @mousedown="handleMapClick">
+      <img class="bg-img" :src="bgImage" alt="scene" />
+      <div class="vignette"></div>
       <div class="map-layer">
-        <!-- 交互物列表 -->
-        <div
-          v-for="obj in visibleTargets"
-          :key="obj.id"
-          class="map-obj"
+        <!--
+          ===== 渲染规则 =====
+          NPC + 门: 常显，不隐藏
+          线索 + 药: 完全隐藏，靠近80px内亮黄光才出现
+        -->
+        <div v-for="obj in visibleTargets" :key="obj.id" class="map-obj"
+          :class="{
+            always: obj.isNpc || obj.isPortal || obj.isDoor,
+            clue: obj.type === 'clue' || obj.type === 'medicine' || obj.isInteractive,
+            nearby: (obj.type === 'clue' || obj.type === 'medicine' || obj.isInteractive) && isNearby(obj)
+          }"
           :style="{ left: obj.x + 'px', top: obj.y + 'px' }"
           @mousedown.stop="interact(obj, $event)"
         >
-          <div
-            class="obj-icon"
-            :class="{
-              npc: obj.isNpc,
-              trap: obj.isTrap,
-              med: obj.type === 'medicine',
-              portal: obj.isPortal,
-              door: obj.isDoor,
-            }"
-          >
-            {{ obj.icon }}
-          </div>
+          <!-- 黄光晕（仅线索+靠近时） -->
+          <div v-if="(obj.type === 'clue' || obj.type === 'medicine' || obj.isInteractive) && isNearby(obj)" class="glow-ring"></div>
+          <div class="obj-icon">{{ obj.icon }}</div>
           <div class="obj-label">{{ obj.name }}</div>
         </div>
-
-        <!-- 玩家角色 -->
-        <div class="player" :style="{ left: playerPos.x + 'px', top: playerPos.y + 'px' }">
-          <div class="player-icon">👤</div>
-        </div>
+        <div class="player" :style="{ left: playerPos.x + 'px', top: playerPos.y + 'px' }"><div class="player-icon">👤</div></div>
       </div>
       <div v-if="hoverTip" class="hover-tip">{{ hoverTip }}</div>
     </div>
 
-    <!-- 密码锁弹窗 -->
     <div v-if="showPadlock" class="modal" @click.self="showPadlock = false">
       <div class="padlock-box">
-        <h3>🔒 旧木门密码锁</h3>
-        <input v-model="password" maxlength="4" placeholder="****" class="code-input" />
-        <div class="btns">
-          <button class="game-btn" @click="checkPassword">确认</button>
-          <button class="game-btn" @click="showPadlock = false">取消</button>
-        </div>
+        <h3>旧木门密码锁</h3>
+        <p class="lock-hint">{{ doorHint }}</p>
+        <input v-model="password" maxlength="4" placeholder="输入密码" class="code-input" />
+        <div class="btns"><button class="game-btn" @click="checkPassword">确认</button><button class="game-btn" @click="showPadlock = false">取消</button></div>
       </div>
     </div>
 
-    <!-- NPC 对话组件 -->
-    <DialogBox
-      v-if="activeDialog"
-      :speaker="activeDialog.speaker"
-      :text="activeDialog.text"
-      :options="activeDialog.options"
-      @next="activeDialog = null"
-      @select-option="onDialogOption"
-    />
+    <div v-if="activeDialog" class="dialog-overlay"></div>
+    <DialogBox v-if="activeDialog" :speaker="activeDialog.speaker" :text="activeDialog.text" :options="activeDialog.options" @next="onDialogNext" @select-option="onDialogOption" />
+
+    <div v-if="showInteract" class="modal" @click.self="showInteract = null">
+      <div class="interact-popup"><p>{{ showInteract.text }}</p><div class="btns"><button class="game-btn" @click="collectInteractClue">拾取线索</button><button class="game-btn" @click="showInteract = null">关闭</button></div></div>
+    </div>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted, watch } from "vue";
-import { useRouter } from "vue-router";
-import { usePlayerStore } from "../store/player";
-import { useSystemMessage } from "../store/systemMessage";
-import { drawPixelBackground } from "../utils/drawPixelBackground";
-import StatusPanel from "../components/StatusPanel.vue";
-import DialogBox from "../components/DialogBox.vue";
+import { ref, computed, onMounted, watch } from "vue"
+import { useRouter } from "vue-router"
+import { usePlayerStore } from "../store/player"
+import { useSystemMessage } from "../store/systemMessage"
+import { usePasswordStore } from "../store/password"
+import StatusPanel from "../components/StatusPanel.vue"
+import DialogBox from "../components/DialogBox.vue"
 
-const router = useRouter();
-const playerStore = usePlayerStore();
-const msgStore = useSystemMessage();
+const router = useRouter(); const playerStore = usePlayerStore(); const msgStore = useSystemMessage(); const passwordStore = usePasswordStore()
+const currentMap = ref("classroom"); const playerPos = ref({ x: 180, y: 320 }); const hoverTip = ref("")
+const showPadlock = ref(false); const password = ref(""); const activeDialog = ref(null); const bgImage = ref("")
+const showInteract = ref(null); const collectedInteract = ref([])
 
-const currentMap = ref("classroom");
-const playerPos = ref({ x: 180, y: 320 });
-const hoverTip = ref("");
-const showPadlock = ref(false);
-const password = ref("");
-const activeDialog = ref(null);
-const bgImage = ref("");
+const bgImages = { classroom: '/images/教室.jpg', corridor: '/images/走廊.jpg' }
+const doorHint = computed(() => `🔑 提示：「${passwordStore.getHint(1)}」`)
 
-// ---------- 交互物列表（坐标与 Canvas 绘制位置完全一致）----------
-const targets = ref([
-  // 教室 (classroom)
-  {
-    id: "door_out",
-    map: "classroom",
-    name: "教室门",
-    x: 1130, y: 380,       // 门的中心点 (门区域: 1100,320 至 1160,470)
-    isPortal: true,
-    toMap: "corridor",
-    spawn: { x: 120, y: 380 },
-    icon: "🚪",
-  },
-  {
-    id: "zhouye",
-    map: "classroom",
-    name: "周野",
-    x: 820, y: 340,
-    isNpc: true,
-    icon: "🧑",
-  },
-  {
-    id: "clue_paper",
-    map: "classroom",
-    name: "沈知夏的草稿纸",
-    x: 335, y: 235,        // 放在第一张课桌上 (桌子区域 300,220)
-    type: "clue",
-    icon: "📜",
-    desc: "“离不开了...不能再掉理智了”",
-  },
-  {
-    id: "clue_log",
-    map: "classroom",
-    name: "值日生日志",
-    x: 585, y: 425,        // 第二张课桌 (550,410)
-    type: "clue",
-    icon: "📖",
-    desc: "“注意，执念林迟会修改告示”",
-  },
-  {
-    id: "trap_eraser",
-    map: "classroom",
-    name: "诡异粉笔擦",
-    x: 950, y: 180,
-    isTrap: true,
-    icon: "🧽",
-    penalty: -15,
-    msg: "吸入粉尘，视线模糊...理智-15",
-  },
+// ==================== 锚点数据 ====================
+/*
+  教室.jpg 像素原画布局参考：
+   - 中间偏下: 讲台（陈老师站在左前方）
+   - 左中: 墙面书架/书柜
+   - 中排: 4列课桌
+   - 右侧: 教室门
+   - 右上角: 办公桌区域
+  走廊.jpg 像素原画布局参考：
+   - 左侧: 一排储物柜（破损）
+   - 右侧: 储物柜+旧木门
+   - 中段地面: 反复擦洗痕迹
+   - 右侧墙壁: 公告栏、值日表
+*/
 
-  // 走廊 (corridor)
-  {
-    id: "door_back",
-    map: "corridor",
-    name: "返回教室",
-    x: 110, y: 380,        // 左侧门 (80,320 区域)
-    isPortal: true,
-    toMap: "classroom",
-    spawn: { x: 1130, y: 380 },
-    icon: "🚪",
-  },
-  {
-    id: "graffiti",
-    map: "corridor",
-    name: "血字墙痕",
-    x: 450, y: 200,
-    type: "clue",
-    icon: "🩸",
-    desc: "倒写数字“8421”",
-  },
-  {
-    id: "locked_door",
-    map: "corridor",
-    name: "旧木门",
-    x: 1085, y: 400,       // 右侧门 (1050,310)
-    isDoor: true,
-    icon: "🚪",
-  },
-  {
-    id: "med_chlor",
-    map: "corridor",
-    name: "盐酸氯丙嗪片",
-    x: 706, y: 366,        // 药品绘制位置 (700,360)
-    type: "medicine",
-    icon: "💊",
-    desc: "恢复25理智",
-    effectValue: 25,
-  },
-]);
+const PROXIMITY = 80
+const isNearby = (obj) => Math.hypot(playerPos.value.x - obj.x, playerPos.value.y - obj.y) < PROXIMITY
 
-const visibleTargets = computed(() => {
-  return targets.value.filter(
-    (t) =>
-      t.map === currentMap.value &&
-      !playerStore.bag.some((i) => i.id === t.id)
-  );
-});
+const anchors = ref([
+  // ========================================
+  // 教室 (classroom) — 像素原画 教室.jpg
+  // ========================================
 
-const generateBackground = (mapType) => {
-  const canvas = document.createElement("canvas");
-  drawPixelBackground(canvas, mapType);
-  bgImage.value = canvas.toDataURL();
-};
+  // --- NPC 常显 ---
+  // 陈老师 — 讲台左前方
+  { id: "teacher_chen", map: "classroom", name: "陈老师", x: 280, y: 340, isNpc: true, icon: "👨‍🏫" },
+  // 周野 — 右侧课桌旁
+  { id: "zhouye", map: "classroom", name: "周野", x: 820, y: 340, isNpc: true, icon: "🧑" },
 
-watch(currentMap, (newMap) => generateBackground(newMap));
+  // --- 门 常显 ---
+  // 教室门 — 画面右侧
+  { id: "door_out", map: "classroom", name: "教室门 → 走廊", x: 1120, y: 370, isPortal: true, toMap: "corridor", spawn: { x: 120, y: 380 }, icon: "🚪" },
 
-onMounted(() => {
-  playerStore.currentChapter = 1;
-  generateBackground(currentMap.value);
-});
+  // --- 线索（隐藏，靠近亮黄光）---
+  // [线索1] 沈知夏的草稿纸 → 锚定讲台桌面书本
+  { id: "clue_paper", map: "classroom", name: "讲台上的草稿纸", x: 500, y: 400, type: "clue", icon: "📜",
+    desc: "一张揉皱的草稿纸，潦草地画着数字和箭头，箭头指向一个被反复涂红叉的「0」。角落隐约有日期印记——年份末尾是「3」。" },
+  // [线索2] 值日生日志 → 锚定前排中间课桌摊开书本
+  { id: "clue_log", map: "classroom", name: "课桌上的日志本", x: 680, y: 440, type: "clue", icon: "📖",
+    desc: "一本普通的班级日志，最后一页被撕去了一半，残页边缘有烧焦的痕迹。残片上只留日期「23号」和半个潦草的签名。" },
+  // [线索3] 化学笔记残页 → 锚定右侧墙面书柜位置
+  { id: "clue_chem", map: "classroom", name: "书柜里的化学笔记", x: 200, y: 180, type: "clue", icon: "🧪",
+    desc: "办公桌上一本摊开的化学笔记，翻到最后一页。上面写着一串方程式——计算结果被涂成了黑块，边缘反复写着「6.02」。" },
+  // [陷阱] 诡异粉笔擦 → 黑板下方粉笔槽
+  { id: "trap_eraser", map: "classroom", name: "黑板下的粉笔擦", x: 600, y: 220, isTrap: true, icon: "🧽", penalty: -15, msg: "吸入粉尘，视线模糊...理智-15" },
+
+  // --- 交互物件（隐藏，靠近亮黄光）---
+  // [交互] 旧书柜 → 左侧墙面书架
+  { id: "obj_bookcase", map: "classroom", name: "旧书柜", x: 120, y: 280, isInteractive: true, icon: "📚",
+    interactText: "书柜里堆满了旧教材。翻到最底层，发现一本没有名字的笔记本。", clueId: "clue_notebook", clueName: "无名笔记本",
+    clueDesc: "一本没有署名的笔记，最后一页用红笔写着一个算式：8×2÷4+1=? 旁边画了一个大大的问号。" },
+  // [交互] 讲台抽屉 → 讲台下方
+  { id: "obj_desk_drawer", map: "classroom", name: "讲台抽屉", x: 600, y: 460, isInteractive: true, icon: "🗄️",
+    interactText: "抽屉卡住了，拉开后发现一份泛黄的班级名单。最后一个名字被涂成了黑块。", clueId: "clue_namelist", clueName: "泛黄的班级名单",
+    clueDesc: "名单上43个名字，第23号位置被涂黑。43-23=20——被涂掉的是第20号？" },
+
+  // ========================================
+  // 走廊 (corridor) — 像素原画 走廊.jpg
+  // ========================================
+
+  // --- NPC 常显 ---
+  // 保洁刘姨 — 走廊中段左侧
+  { id: "aunt_liu", map: "corridor", name: "保洁员刘姨", x: 320, y: 400, isNpc: true, icon: "🧹" },
+
+  // --- 门 常显 ---
+  // 返回教室 — 左侧尽头
+  { id: "door_back", map: "corridor", name: "← 返回教室", x: 70, y: 370, isPortal: true, toMap: "classroom", spawn: { x: 1120, y: 370 }, icon: "🚪" },
+  // 旧木门 — 右侧尽头
+  { id: "locked_door", map: "corridor", name: "旧木门 🔒", x: 1130, y: 370, isDoor: true, icon: "🚪" },
+
+  // --- 线索（隐藏，靠近亮黄光）---
+  // [线索4] 血字墙痕 → 锚定左侧破损储物柜柜门
+  { id: "graffiti", map: "corridor", name: "储物柜上的痕迹", x: 380, y: 240, type: "clue", icon: "🩸",
+    desc: "走廊墙壁上暗红色的痕迹，从某个特定角度看隐约能辨认出几个数字的轮廓。痕迹周围有七道细小的划痕。" },
+  // [线索5] 褪色的值日表 → 锚定垃圾桶旁散落纸张
+  { id: "clue_schedule", map: "corridor", name: "地上的纸张", x: 920, y: 380, type: "clue", icon: "📋",
+    desc: "走廊公告栏的值日表已经褪色，周一值日生名字模糊不清。只有周五的值日生还清晰可辨——林迟。" },
+  // [线索6] 反复清洗的地砖 → 储物柜前木地板污渍处
+  { id: "clue_bucket", map: "corridor", name: "地板上的污渍", x: 600, y: 460, type: "clue", icon: "🪣",
+    desc: "走廊中间一块地砖被擦得锃亮，与周围形成鲜明对比。砖缝里卡着一张浸湿的纸片，上面只有一个清晰的字。" },
+  // [药品] 盐酸氯丙嗪片 → 右侧敞开柜门储物柜内部
+  { id: "med_chlor", map: "corridor", name: "柜子里的药片", x: 850, y: 300, type: "medicine", icon: "💊", desc: "恢复25理智", effectValue: 25 },
+
+  // --- 交互物件（隐藏，靠近亮黄光）---
+  // [交互] 消防柜 → 左侧墙壁红色柜子
+  { id: "obj_firebox", map: "corridor", name: "破旧的消防柜", x: 180, y: 260, isInteractive: true, icon: "🧯",
+    interactText: "消防柜玻璃碎了，里面有一张纸条：密码的每一位都是数字，它们加起来等于15。", clueId: "clue_firenote", clueName: "消防柜里的纸条",
+    clueDesc: "纸条上写着：密码四位数字之和为15。四个数字，和为15。" },
+  // [交互] 公告栏 → 右侧墙壁公告板
+  { id: "obj_noticeboard", map: "corridor", name: "公告栏", x: 1050, y: 200, isInteractive: true, icon: "📌",
+    interactText: "公告栏上贴着通知，其中一张被撕得只剩上半部分：实验中...记忆...删除...日期栏只剩一个模糊的年份。", clueId: "clue_notice", clueName: "撕破的公告",
+    clueDesc: "半张公告残留的文字：实验中、记忆、删除。年份栏只剩下最后一位：3。" },
+])
+
+// 可见性过滤（已收集的线索和已交互物件隐藏）
+const visibleTargets = computed(() => anchors.value.filter(t => {
+  if (t.map !== currentMap.value) return false
+  if (t.isInteractive) return !collectedInteract.value.includes(t.id)
+  return !playerStore.bag.some(i => i.id === t.id)
+}))
+
+// 背景加载
+const generateBackground = (mapType) => { bgImage.value = bgImages[mapType] || bgImages.classroom }
+watch(currentMap, (newMap) => generateBackground(newMap))
+onMounted(() => { playerStore.currentChapter = 1; passwordStore.initPasswords(); generateBackground(currentMap.value) })
 
 const handleMapClick = (e) => {
-  const rect = e.currentTarget.getBoundingClientRect();
-  playerPos.value = {
-    x: e.clientX - rect.left,
-    y: e.clientY - rect.top,
-  };
-  hoverTip.value = "";
-};
+  if (activeDialog.value) return
+  const rect = e.currentTarget.getBoundingClientRect()
+  playerPos.value = { x: e.clientX - rect.left, y: e.clientY - rect.top }
+  hoverTip.value = ""
+}
 
 const interact = (target, event) => {
-  playerPos.value = { x: target.x, y: target.y + 25 };
-  hoverTip.value = target.name;
+  if (activeDialog.value) return
+  // NPC和门直接响应；线索类需靠近
+  if (!target.isNpc && !target.isPortal && !target.isDoor && !isNearby(target)) return
+  playerPos.value = { x: target.x, y: target.y + 25 }; hoverTip.value = target.name
 
-  if (target.isPortal) {
-    hoverTip.value = "推开门...";
-    setTimeout(() => {
-      currentMap.value = target.toMap;
-      playerPos.value = target.spawn;
-      hoverTip.value = "";
-    }, 300);
-    return;
-  }
-
-  if (target.isTrap) {
-    playerStore.updateAttributes(target.penalty, 5);
-    msgStore.show(target.msg);
-    targets.value = targets.value.filter((t) => t.id !== target.id);
-    hoverTip.value = "";
-    return;
-  }
-
-  if (target.isNpc) {
-    activeDialog.value = {
-      speaker: "周野",
-      text: "林迟，走廊那扇门的密码被宿命涂改了，去找沈知夏留下的线索纸。",
-      options: [{ text: "“我知道了，谢谢。”", action: "CLOSE" }],
-    };
-    return;
-  }
-
+  if (target.isPortal) { hoverTip.value = "推开门..."; setTimeout(() => { currentMap.value = target.toMap; playerPos.value = target.spawn; hoverTip.value = "" }, 300); return }
+  if (target.isTrap) { const r = playerStore.updateAttributes(target.penalty, 5); msgStore.show(target.msg); if (r) { msgStore.show(playerStore.statusDescription, 4000); return }; anchors.value = anchors.value.filter(t => t.id !== target.id); hoverTip.value = ""; return }
+  if (target.isNpc) { openNpcDialog(target.id); return }
+  if (target.isInteractive) { showInteract.value = target; return }
   if (target.type === "clue" || target.type === "medicine") {
-    playerStore.addItemToBag({
-      id: target.id,
-      name: target.name,
-      type: target.type,
-      desc: target.desc,
-      effectValue: target.effectValue || 0,
-      count: 1,
-    });
-    msgStore.show(`📦 获得：${target.name}`);
-    targets.value = targets.value.filter((t) => t.id !== target.id);
-    hoverTip.value = "";
-    return;
+    playerStore.addItemToBag({ id: target.id, name: target.name, type: target.type, desc: target.desc, effectValue: target.effectValue || 0, count: 1 })
+    msgStore.show("获得：" + target.name); playerStore.unlockStory('s1_ch1_start'); if (target.id === 'clue_paper') playerStore.unlockStory('s5_ch1_paper')
+    anchors.value = anchors.value.filter(t => t.id !== target.id); hoverTip.value = ""; return
   }
+  if (target.isDoor) { showPadlock.value = true; playerStore.unlockStory('s6_ch1_password') }
+}
 
-  if (target.isDoor) {
-    showPadlock.value = true;
-  }
-};
+const collectInteractClue = () => {
+  const obj = showInteract.value; if (!obj) return
+  playerStore.addItemToBag({ id: obj.clueId, name: obj.clueName, type: "clue", desc: obj.clueDesc, count: 1 })
+  msgStore.show("获得：" + obj.clueName); playerStore.unlockStory('s1_ch1_start')
+  collectedInteract.value.push(obj.id); showInteract.value = null
+}
 
-const onDialogOption = (opt) => {
-  activeDialog.value = null;
-  if (opt.action === "REMOVE_NPC") {
-    targets.value = targets.value.filter((t) => t.id !== "zhouye");
+const openNpcDialog = (npcId) => {
+  const dialogs = {
+    zhouye: { speaker: "周野", text: `林迟，你也回来了？走廊那扇旧木门的密码好像被人改过——每次都不一样。我找到过一张纸条，上面写着「${passwordStore.getHint(1)}」，你看看有没有用。`, options: [{ text: "「谢谢你告诉我。」", action: "CLOSE" }], onClose: () => { if (!playerStore.hasClueByName("周野的恍惚之言")) { playerStore.addItemToBag({ id: "npc_zhou_clue", name: "周野的恍惚之言", type: "clue", desc: "周野说他在走廊捡到过一张纸条，上面有关于密码的提示。他手里捏着一张撕破的纸片，写着「第4组」。", count: 1 }); msgStore.show("从对话中察觉线索：「周野的恍惚之言」") }; playerStore.unlockStory('s3_ch1_zhouye') } },
+    teacher_chen: { speaker: "陈老师", text: "这么晚了还在教室？也好——你帮我看看这本笔记。我总觉得有什么不对劲，方程式的结果不管怎么算都不对。阿伏伽德罗常数是多少来着？6.02×10²³——无穷。", options: [{ text: "「老师，这个常数有什么含义？」", action: "CLOSE" }, { text: "「我不记得了。」", action: "CLOSE", reasonDelta: 0, obsessionDelta: 5 }], onClose: () => { if (!playerStore.hasClueByName("陈老师的化学笔记")) { playerStore.addItemToBag({ id: "npc_teacher_clue", name: "陈老师的化学笔记", type: "clue", desc: "化学笔记翻到最后一页，方程式被涂黑，边缘反复写着一个常数：6.02×10²³——阿伏伽德罗常数。", count: 1 }); msgStore.show("从对话中察觉线索：「陈老师的化学笔记」") } } },
+    aunt_liu: { speaker: "保洁员刘姨", text: "唉，这地上的污渍怎么擦都擦不干净。我每天都擦，每天它都还在——就跟昨天一模一样。你说奇怪不奇怪？这地面上还老是出现新的划痕……", options: [{ text: "「刘姨，您擦这块地多久了？」", action: "CLOSE", reasonDelta: 3, obsessionDelta: 0 }], onClose: () => { if (!playerStore.hasClueByName("刘姨的抱怨")) { playerStore.addItemToBag({ id: "clue_aunt", name: "刘姨的抱怨", type: "clue", desc: "刘姨每天都在擦同一块地砖。砖缝里有七道划痕——和墙上血字周围的划痕数量一模一样。", count: 1 }); msgStore.show("从对话中察觉线索：「刘姨的抱怨」") } } },
   }
-};
+  activeDialog.value = dialogs[npcId] || null
+}
+const onDialogNext = () => { const d = activeDialog.value; activeDialog.value = null; if (d?.onClose) d.onClose() }
+const onDialogOption = (opt) => { const d = activeDialog.value; if (opt?.reasonDelta || opt?.obsessionDelta) { playerStore.updateAttributes(opt.reasonDelta || 0, opt.obsessionDelta || 0) }; activeDialog.value = null; if (d?.onClose) d.onClose() }
 
-const checkPassword = () => {
-  if (password.value === "8421") {
-    msgStore.show("🔓 木门打开了，你向前迈进...");
-    showPadlock.value = false;
-    router.push("/chapter2");
-  } else {
-    msgStore.show("❌ 密码错误，电击反噬！理智 -5");
-    playerStore.updateAttributes(-5, 2);
-  }
-};
+const checkPassword = () => { if (password.value === passwordStore.getPassword(1)) { msgStore.show("木门打开了！"); showPadlock.value = false; router.push("/chapter2") } else { msgStore.show("密码错误！电击反噬..."); playerStore.updateAttributes(-15, 2) } }
 </script>
 
 <style scoped>
-/* 样式与之前相同，保持 */
-.scene {
-  width: 100vw;
-  height: 100vh;
-  background: #0a0a0c;
+.scene { width: 100vw; height: 100vh; background: #080a0e; }
+.viewport { width: 1200px; height: 500px; position: absolute; top: 105px; left: 50%; transform: translateX(-50%); overflow: hidden; border-radius: 16px; box-shadow: 0 0 40px rgba(0,0,0,0.6); border: 1px solid rgba(255,255,255,0.06); cursor: default; animation: viewport-in 0.6s ease; }
+.bg-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; z-index: 0; }
+@keyframes viewport-in { from { opacity: 0; filter: blur(8px); } to { opacity: 1; filter: blur(0); } }
+.vignette { position: absolute; inset: 0; z-index: 4; pointer-events: none; box-shadow: inset 0 0 120px rgba(0,0,0,0.55), inset 0 0 40px rgba(0,0,0,0.35); }
+.map-layer { width: 100%; height: 100%; position: relative; }
+
+/* 基础锚点 */
+.map-obj { position: absolute; transform: translate(-50%,-50%); text-align: center; z-index: 8; }
+/* NPC + 门: 始终显示 */
+.map-obj.always { opacity: 1; pointer-events: auto; }
+/* 线索/药/交互物: 默认隐藏 */
+.map-obj.clue { opacity: 0; pointer-events: none; transition: opacity 0.25s; }
+/* 线索/药/交互物: 靠近时出现 */
+.map-obj.clue.nearby { opacity: 1; pointer-events: auto; }
+
+/* 黄光呼吸环（仅线索靠近时） */
+.glow-ring {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
+  width: 64px; height: 64px; border-radius: 50%; pointer-events: none; z-index: 0;
+  animation: yellow-breathe 1s ease-in-out infinite;
 }
-.viewport {
-  width: 1200px;
-  height: 500px;
-  position: absolute;
-  top: 105px;
-  left: 50%;
-  transform: translateX(-50%);
-  overflow: hidden;
-  border-radius: 16px;
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.6);
-  cursor: default;
-  background-size: cover;
-  background-position: center;
-  background-repeat: no-repeat;
+@keyframes yellow-breathe {
+  0%,100% { box-shadow: 0 0 6px 2px #FFDD00, 0 0 18px 5px rgba(255,221,0,0.35); background: rgba(255,221,0,0.04); }
+  50%     { box-shadow: 0 0 14px 5px #FFDD00, 0 0 36px 10px rgba(255,221,0,0.55); background: rgba(255,221,0,0.10); }
 }
-.map-layer {
-  width: 100%;
-  height: 100%;
-  position: relative;
-}
-.map-obj {
-  position: absolute;
-  transform: translate(-50%, -50%);
-  text-align: center;
-  cursor: pointer;
-  z-index: 10;
-}
-.obj-icon {
-  font-size: 28px;
-  filter: drop-shadow(0 2px 4px black);
-}
-.obj-icon.npc {
-  filter: drop-shadow(0 0 6px #ffaa66);
-}
-.obj-icon.trap {
-  filter: drop-shadow(0 0 8px #ff3333);
-}
-.obj-icon.med {
-  filter: drop-shadow(0 0 6px #44ff44);
-}
-.obj-icon.portal,
-.obj-icon.door {
-  filter: drop-shadow(0 0 4px #aa8866);
-}
-.obj-label {
-  font-size: 11px;
-  background: rgba(0, 0, 0, 0.7);
-  padding: 2px 8px;
-  border-radius: 20px;
-  white-space: nowrap;
-  margin-top: 4px;
-  color: #ddd;
-}
-.player {
-  position: absolute;
-  width: 36px;
-  height: 42px;
-  transform: translate(-50%, -50%);
-  transition: left 0.2s, top 0.2s;
-  text-align: center;
-  pointer-events: none;
-  z-index: 20;
-}
-.player-icon {
-  font-size: 30px;
-  filter: drop-shadow(0 2px 2px black);
-}
-.hover-tip {
-  position: absolute;
-  bottom: 12px;
-  left: 50%;
-  transform: translateX(-50%);
-  background: #1a1a1c;
-  padding: 4px 18px;
-  border-radius: 40px;
-  font-size: 12px;
-  color: #ddd;
-  border-left: 3px solid #c0a080;
-  z-index: 30;
-}
-.modal {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.85);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 200;
-}
-.padlock-box {
-  background: #121214;
-  border: 1px solid #3a3a3e;
-  border-radius: 24px;
-  padding: 28px;
-  width: 340px;
-  text-align: center;
-}
-.code-input {
-  background: #1e1e22;
-  border: 1px solid #5a5a5e;
-  color: #ffccaa;
-  font-size: 28px;
-  text-align: center;
-  width: 150px;
-  margin: 20px 0;
-  border-radius: 8px;
-}
-.btns {
-  display: flex;
-  gap: 16px;
-  justify-content: center;
-}
+
+.obj-icon { font-size: 26px; filter: drop-shadow(0 2px 4px black); position: relative; z-index: 2; }
+.obj-label { font-size: 10px; background: rgba(0,0,0,0.8); padding: 2px 10px; border-radius: 20px; white-space: nowrap; margin-top: 2px; color: #ddd; }
+
+.player { position: absolute; width: 36px; height: 42px; transform: translate(-50%,-50%); transition: left 0.2s, top 0.2s; text-align: center; pointer-events: none; z-index: 20; }
+.player-icon { font-size: 30px; filter: drop-shadow(0 2px 4px black); }
+.hover-tip { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); background: #1a1a1c; padding: 4px 18px; border-radius: 40px; font-size: 12px; color: #ddd; border-left: 3px solid #c0a080; z-index: 30; }
+.modal { position: fixed; inset: 0; background: rgba(0,0,0,0.85); display: flex; align-items: center; justify-content: center; z-index: 200; }
+.padlock-box { background: #121214; border: 1px solid #3a3a3e; border-radius: 24px; padding: 28px; width: 400px; text-align: center; }
+.lock-hint { font-size: 12px; color: #c0a080; margin: 12px 0; padding: 8px; background: #1a1a1c; border-radius: 8px; }
+.code-input { background: #1e1e22; border: 1px solid #5a5a5e; color: #ffccaa; font-size: 28px; text-align: center; width: 180px; margin: 20px 0; border-radius: 8px; }
+.btns { display: flex; gap: 16px; justify-content: center; }
+.dialog-overlay { position: absolute; inset: 0; z-index: 15; background: rgba(0,0,0,0.2); pointer-events: all; }
+.interact-popup { background: #12141a; border: 1px solid #3a3d44; border-radius: 16px; padding: 24px; width: 420px; text-align: center; color: #c8ccd4; }
+.interact-popup p { line-height: 1.7; margin-bottom: 16px; font-size: 14px; }
 </style>
